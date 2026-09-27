@@ -15,6 +15,20 @@
   p{margin:6px 0;line-height:1.5;font-size:15px;color:#dfe8f2}
   .btn{margin-top:18px;padding:14px 34px;font-size:18px;font-weight:700;border:0;border-radius:40px;background:#e23b2e;color:#fff;box-shadow:0 5px 0 #8f1f16;cursor:pointer}
   .btn:active{transform:translateY(3px);box-shadow:0 2px 0 #8f1f16}
+  #pin{display:none;flex-direction:column;align-items:center;margin-top:14px}
+  #pin.show{display:flex}
+  .pin-label{font-size:14px;color:#dfe8f2;margin-bottom:10px}
+  .pin-dots{display:flex;gap:14px;margin-bottom:14px}
+  .pin-dots span{width:16px;height:16px;border-radius:50%;border:2px solid #fff;box-sizing:border-box}
+  .pin-dots span.on{background:#fff}
+  .pin-dots.bad{animation:pinShake .35s}
+  .pin-dots.bad span{border-color:#ff6b5b}
+  @keyframes pinShake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-10px)}40%,80%{transform:translateX(10px)}}
+  .pin-pad{display:grid;grid-template-columns:repeat(3,64px);gap:10px}
+  .pin-pad button{height:56px;border:0;border-radius:14px;background:rgba(255,255,255,.14);color:#fff;font-size:22px;font-weight:700;cursor:pointer}
+  .pin-pad button:active{background:rgba(255,255,255,.3)}
+  .pin-pad button.sub{font-size:15px;background:rgba(255,255,255,.06)}
+  .pin-msg{height:18px;margin-top:10px;font-size:13px;color:#ff8a7d}
   .how{background:rgba(255,255,255,.08);border-radius:12px;padding:12px 16px;margin-top:14px;text-align:left;font-size:14px}
   .how div{margin:4px 0}
   .stars{font-size:44px;letter-spacing:6px;margin:4px 0 2px}
@@ -58,6 +72,12 @@
     <h2>게임 오버</h2>
     <p id="overInfo"></p>
     <button class="btn" id="btnRetry">다시 하기</button>
+    <div id="pin">
+      <div class="pin-label">🔒 비밀번호를 입력하세요</div>
+      <div class="pin-dots" id="pinDots"><span></span><span></span><span></span><span></span></div>
+      <div class="pin-pad" id="pinPad"></div>
+      <div class="pin-msg" id="pinMsg"></div>
+    </div>
   </div>
 </div>
 
@@ -220,7 +240,7 @@ function computeAim(d) {
 
 function fire(dir) {
   S.aim = dir; S.queue = S.flock.slice(); S.launchT = 0; S.launched = 0;
-  S.balls = []; S.firstLandX = null; S.fireTime = 0; S.fast = false;
+  S.balls = []; S.firstLandX = null; S.fireTime = 0; S.fast = false; S.ts = 1; S.speedNotice = false;
   S.drag = null; phase = 'fire';
 }
 
@@ -463,10 +483,45 @@ function showOver() {
 }
 
 $('btnStart').onclick = () => { initAudio(); $('ovStart').classList.remove('show'); newRun(); };
-$('btnRetry').onclick = () => { $('ovOver').classList.remove('show'); newRun(); };
+// 다시 하기: 비밀번호 확인
+const RETRY_PIN = '2842';
+let pinInput = '';
+function renderPin(bad) {
+  const dots = $('pinDots');
+  [...dots.children].forEach((d, i) => d.classList.toggle('on', i < pinInput.length));
+  dots.classList.remove('bad');
+  if (bad) { void dots.offsetWidth; dots.classList.add('bad'); }
+}
+function pressPin(k) {
+  if (k === 'del') pinInput = pinInput.slice(0, -1);
+  else if (k === 'cancel') { pinInput = ''; $('pin').classList.remove('show'); $('btnRetry').style.display = ''; $('pinMsg').textContent = ''; }
+  else if (pinInput.length < 4) pinInput += k;
+  renderPin(false);
+  if (pinInput.length === 4) {
+    if (pinInput === RETRY_PIN) {
+      pinInput = ''; renderPin(false);
+      $('pin').classList.remove('show'); $('btnRetry').style.display = ''; $('pinMsg').textContent = '';
+      $('ovOver').classList.remove('show'); newRun();
+    } else {
+      setTimeout(() => { pinInput = ''; renderPin(true); $('pinMsg').textContent = '비밀번호가 틀렸어요'; }, 120);
+    }
+  }
+}
+for (const k of ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'cancel', '0', 'del']) {
+  const b = document.createElement('button');
+  b.textContent = k === 'del' ? '⌫' : k === 'cancel' ? '취소' : k;
+  if (k === 'cancel' || k === 'del') b.className = 'sub';
+  b.onclick = () => pressPin(k);
+  $('pinPad').appendChild(b);
+}
+$('btnRetry').onclick = () => {
+  pinInput = ''; renderPin(false); $('pinMsg').textContent = '';
+  $('btnRetry').style.display = 'none'; $('pin').classList.add('show');
+};
 
 // ───────────────────────── 입력 ─────────────────────────
 const RECALL = { x: W - 32, y: 30, r: 20 };
+const FASTBTN = { x: W - 80, y: 30, r: 20 };
 const BAR = { x0: 20, y: FLOOR + 36, sp: 22 };
 
 function toLocal(e) {
@@ -489,7 +544,7 @@ cvs.addEventListener('pointerdown', e => {
     cvs.setPointerCapture(e.pointerId);
   } else if (phase === 'fire') {
     if (Math.hypot(p.x - RECALL.x, p.y - RECALL.y) < RECALL.r + 6) recall();
-    else S.fast = !S.fast;
+    else if (Math.hypot(p.x - FASTBTN.x, p.y - FASTBTN.y) < FASTBTN.r + 6) S.fast = !S.fast;
   }
 });
 cvs.addEventListener('pointermove', e => {
@@ -532,7 +587,13 @@ function update(dt) {
 
   if (phase === 'fire') {
     S.fireTime += dt;
-    S.ts = S.fast ? 3 : S.fireTime > 10 ? 3 : S.fireTime > 5 ? 2 : 1;
+    // 4초 후부터 12초까지 1배 → 3배로 서서히 가속 (버튼으로 즉시 3배)
+    const target = S.fast ? 3 : 1 + 2 * clamp((S.fireTime - 4) / 8, 0, 1);
+    S.ts += (target - S.ts) * Math.min(1, dt * 3);
+    if (!S.speedNotice && S.ts > 1.15) {
+      S.speedNotice = true;
+      pops.push({ x: W / 2, y: TOP + 40, text: '⏩ 점점 빨라져요', life: 1.4, color: '#ffd84a' });
+    }
     const h = dt * S.ts;
     S.launchT -= h;
     while (S.queue.length && S.launchT <= 0) { launch(S.queue.shift()); S.launchT += 0.075; }
@@ -753,7 +814,10 @@ function drawHUD() {
   if (phase === 'fire') {
     ctx.fillStyle = '#e23b2e'; ctx.beginPath(); ctx.arc(RECALL.x, RECALL.y, RECALL.r, 0, 7); ctx.fill();
     ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 18px system-ui'; ctx.fillText('⤓', RECALL.x, RECALL.y + 1);
-    if (S.ts > 1) { ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 13px system-ui'; ctx.fillText('▶▶ x' + S.ts, RECALL.x - 52, RECALL.y); }
+    ctx.fillStyle = S.fast ? '#ffd84a' : 'rgba(255,255,255,.18)';
+    ctx.beginPath(); ctx.arc(FASTBTN.x, FASTBTN.y, FASTBTN.r, 0, 7); ctx.fill();
+    ctx.fillStyle = S.fast ? '#3a2a1a' : '#fff'; ctx.font = 'bold 15px system-ui'; ctx.fillText('⏩', FASTBTN.x, FASTBTN.y + 1);
+    if (S.ts > 1.05) { ctx.fillStyle = '#ffd84a'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'right'; ctx.fillText('x' + S.ts.toFixed(1), FASTBTN.x - 26, FASTBTN.y); }
   }
 }
 

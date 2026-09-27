@@ -36,6 +36,7 @@
     <p>새 무리를 튕겨서 돼지들을 물리치세요!</p>
     <div class="how">
       <div>🎯 화면을 누르고 <b>아래로 당겼다 놓으면</b> 발사</div>
+      <div>📏 많이 당길수록 조준선이 길어져요 (초록 게이지 = 2번째 튕김까지)</div>
       <div>🐦 새들이 벽과 블록에 튕기면서 데미지를 줍니다</div>
       <div>⬇️ 턴마다 블록이 한 칸씩 내려와요. 바닥에 닿으면 끝!</div>
       <div>🥚 알을 먹으면 레드가 무리에 합류</div>
@@ -66,6 +67,9 @@
 const W = 420, H = 740, COLS = 7, CELL = 60, TOP = 80, ROWS = 10;
 const FLOOR = TOP + ROWS * CELL;          // 680
 const PAD = 3, SLING_Y = FLOOR - 16, BASE_SPEED = 780;
+const MAX_PULL = 170, MIN_PULL = 34;
+// 블록 판정: 돼지는 원(반지름), 나머지는 사각형(반폭)
+const SHAPE = { pig: { circle: 15 }, king: { circle: 21 }, tnt: { half: 19 }, stone: { half: CELL / 2 - PAD } };
 
 const BIRDS = {
   red:     { name: '레드',   color: '#e23b2e', belly: '#f6dcb8', r: 9,  speed: 1.0,  dmg: 1 },
@@ -175,7 +179,7 @@ function rebuildGrid() {
 function spawnRow() {
   if (S.wave >= S.waves) return;
   S.wave++;
-  const base = 1 + S.totalTurns * 0.4 + S.level * 0.6 + S.wave * 0.15;
+  const base = 1 + S.totalTurns * 0.36 + S.level * 0.6 + S.wave * 0.15;
   let cols = shuffle([0, 1, 2, 3, 4, 5, 6]);
   if (S.level % 3 === 0 && S.wave === S.waves) {
     const hp = Math.round(base * 8);
@@ -208,9 +212,10 @@ function shiftDown() {
 // ───────────────────────── 발사 ─────────────────────────
 function computeAim(d) {
   const dx = d.sx - d.x, dy = d.sy - d.y, len = Math.hypot(dx, dy);
-  if (len < 20 || dy >= -4) return null;
+  if (len < 12 || dy >= -4) return null;
   const a = clamp(Math.atan2(dy, dx), -Math.PI + 0.14, -0.14);
-  return { x: Math.cos(a), y: Math.sin(a), pull: Math.min(len, 90) };
+  const pull = Math.min(len, MAX_PULL);
+  return { x: Math.cos(a), y: Math.sin(a), pull, t: pull / MAX_PULL, ok: len >= MIN_PULL };
 }
 
 function fire(dir) {
@@ -246,7 +251,16 @@ function findHits(x, y, r) {
     for (let col = c0; col <= c1; col++) {
       const blk = S.grid[row * COLS + col];
       if (!blk) continue;
-      const rx = col * CELL + PAD, ry = TOP + row * CELL + PAD, s = CELL - 2 * PAD;
+      const sh = SHAPE[blk.type], ccx = col * CELL + CELL / 2, ccy = TOP + row * CELL + CELL / 2;
+      if (sh.circle) {
+        const R = sh.circle, dx = x - ccx, dy = y - ccy, d2 = dx * dx + dy * dy;
+        if (d2 >= (r + R) ** 2) continue;
+        const d = Math.sqrt(d2);
+        if (d > 1e-6) out.push({ blk, nx: dx / d, ny: dy / d, pen: r + R - d });
+        else out.push({ blk, nx: 0, ny: 1, pen: r + R });
+        continue;
+      }
+      const rx = ccx - sh.half, ry = ccy - sh.half, s = sh.half * 2;
       const cx = clamp(x, rx, rx + s), cy = clamp(y, ry, ry + s);
       const dx = x - cx, dy = y - cy, d2 = dx * dx + dy * dy;
       if (d2 >= r * r) continue;
@@ -486,7 +500,7 @@ cvs.addEventListener('pointerup', () => {
   if (!S || !S.drag) return;
   const a = computeAim(S.drag);
   S.drag = null;
-  if (a && phase === 'aim') fire(a);
+  if (a && a.ok && phase === 'aim') fire(a);
 });
 cvs.addEventListener('pointercancel', () => { if (S) S.drag = null; });
 
@@ -603,7 +617,8 @@ function drawPig(x, y, R, king) {
 
 function drawBlock(b, time) {
   const x = b.c * CELL, y = TOP + b.r * CELL + b.oy;
-  const h = CELL / 2 - PAD, sc = 1 + b.flash * 0.1;
+  const sh = SHAPE[b.type], h = sh.half || sh.circle, sc = 1 + b.flash * 0.1;
+  const outline = () => { ctx.beginPath(); if (sh.circle) ctx.arc(0, 0, h, 0, 7); else rr(ctx, -h, -h, h * 2, h * 2, 7); };
   ctx.save(); ctx.translate(x + CELL / 2, y + CELL / 2); ctx.scale(sc, sc);
   let hpY = h - 7;
   if (b.type === 'stone') {
@@ -617,22 +632,22 @@ function drawBlock(b, time) {
     hpY = 0;
   } else if (b.type === 'tnt') {
     ctx.fillStyle = '#e0582f'; ctx.strokeStyle = '#8a2a10'; ctx.lineWidth = 2;
-    rr(ctx, -h, -h, h * 2, h * 2, 6); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#f7c948'; ctx.fillRect(-h, -8, h * 2, 12);
-    ctx.fillStyle = '#8a2a10'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('TNT', 0, -2);
-    hpY = h - 8;
+    rr(ctx, -h, -h, h * 2, h * 2, 5); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#f7c948'; ctx.fillRect(-h, -11, h * 2, 11);
+    ctx.fillStyle = '#8a2a10'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('TNT', 0, -5);
+    hpY = 9;
   } else {
     const king = b.type === 'king';
-    ctx.fillStyle = king ? 'rgba(255,210,58,.28)' : 'rgba(255,255,255,.2)';
-    ctx.strokeStyle = king ? 'rgba(184,134,11,.8)' : 'rgba(40,90,20,.35)'; ctx.lineWidth = 2;
-    rr(ctx, -h, -h, h * 2, h * 2, 10); ctx.fill(); ctx.stroke();
-    drawPig(0, king ? 0 : -5, king ? 17 : 15, king);
+    ctx.fillStyle = 'rgba(30,60,20,.18)';
+    ctx.beginPath(); ctx.ellipse(0, h - 2, h * 0.8, 4, 0, 0, 7); ctx.fill();
+    drawPig(0, 0, h - 1, king);
+    hpY = h + 7;
   }
-  if (b.flash > 0) { ctx.globalAlpha = b.flash * 0.6; ctx.fillStyle = '#fff'; rr(ctx, -h, -h, h * 2, h * 2, 8); ctx.fill(); ctx.globalAlpha = 1; }
+  if (b.flash > 0) { ctx.globalAlpha = b.flash * 0.6; ctx.fillStyle = '#fff'; outline(); ctx.fill(); ctx.globalAlpha = 1; }
   if (b.r >= ROWS - 2) {
     ctx.strokeStyle = `rgba(255,40,40,${0.5 + 0.5 * Math.sin(time * 8)})`; ctx.lineWidth = 3;
-    rr(ctx, -h, -h, h * 2, h * 2, 8); ctx.stroke();
+    outline(); ctx.stroke();
   }
   ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.fillStyle = '#fff';
@@ -652,23 +667,24 @@ function drawEgg(p) {
 
 function previewPath(dir) {
   const pts = [], r = 9, step = 4;
-  let x = S.slingX, y = SLING_Y, vx = dir.x, vy = dir.y, len = 0, bounced = false, after = 0;
-  while (len < 520) {
+  let x = S.slingX, y = SLING_Y, vx = dir.x, vy = dir.y, len = 0, bounces = 0, after = 0;
+  const maxLen = 220 + 560 * dir.t, maxBounces = dir.t >= 0.75 ? 2 : 1;
+  while (len < maxLen) {
     x += vx * step; y += vy * step; len += step;
     if (x < r) { x = r; vx = Math.abs(vx); }
     if (x > W - r) { x = W - r; vx = -Math.abs(vx); }
     if (y < TOP + r) { y = TOP + r; vy = Math.abs(vy); }
     if (y > FLOOR) break;
-    if (!bounced) {
+    if (bounces < maxBounces) {
       const hs = findHits(x, y, r);
       if (hs.length) {
         const ht = hs.reduce((a, b) => (b.pen > a.pen ? b : a));
         const dot = vx * ht.nx + vy * ht.ny;
         x += ht.nx * ht.pen; y += ht.ny * ht.pen;
         if (dot < 0) { vx -= 2 * dot * ht.nx; vy -= 2 * dot * ht.ny; }
-        bounced = true; pts.push({ x, y, hit: true });
+        bounces++; pts.push({ x, y, hit: true });
       }
-    } else if ((after += step) > 80) break;
+    } else if ((after += step) > 60) break;
     if (len % 16 < step) pts.push({ x, y });
   }
   return pts;
@@ -680,8 +696,16 @@ function drawSling(aim) {
   ctx.beginPath(); ctx.moveTo(sx, FLOOR + 12); ctx.lineTo(sx, FLOOR - 6);
   ctx.moveTo(sx, FLOOR - 6); ctx.lineTo(sx - 12, ay); ctx.moveTo(sx, FLOOR - 6); ctx.lineTo(sx + 12, ay); ctx.stroke();
   let px = sx, py = SLING_Y;
-  if (aim) { px -= aim.x * aim.pull * 0.35; py -= aim.y * aim.pull * 0.35; }
-  ctx.strokeStyle = '#3b2210'; ctx.lineWidth = 3;
+  if (aim) {
+    px -= aim.x * aim.pull * 0.42; py -= aim.y * aim.pull * 0.42;
+    // 당김 게이지
+    ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(sx, SLING_Y, 34, 0, 7); ctx.stroke();
+    ctx.strokeStyle = !aim.ok ? '#ff6b5b' : aim.t >= 0.75 ? '#5fe07a' : '#ffd84a';
+    ctx.beginPath(); ctx.arc(sx, SLING_Y, 34, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * aim.t); ctx.stroke();
+  }
+  ctx.strokeStyle = aim && aim.t > 0.6 ? '#5a1f10' : '#3b2210';
+  ctx.lineWidth = aim ? 3.5 - 1.5 * aim.t : 3;
   ctx.beginPath(); ctx.moveTo(sx - 12, ay); ctx.lineTo(px, py); ctx.lineTo(sx + 12, ay); ctx.stroke();
   const next = phase === 'aim' ? S.flock[0] : phase === 'fire' ? S.queue[0] : null;
   if (next) drawBird(ctx, next, px, py, BIRDS[next].r);
@@ -781,7 +805,7 @@ function draw(time) {
     const aim = S.drag && phase === 'aim' ? computeAim(S.drag) : null;
     if (aim) {
       for (const p of previewPath(aim)) {
-        ctx.fillStyle = p.hit ? '#ffd84a' : 'rgba(255,255,255,.9)';
+        ctx.fillStyle = p.hit ? '#ffd84a' : `rgba(255,255,255,${aim.ok ? 0.55 + 0.4 * aim.t : 0.3})`;
         ctx.beginPath(); ctx.arc(p.x, p.y, p.hit ? 5 : 3, 0, 7); ctx.fill();
       }
     }
